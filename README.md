@@ -1,8 +1,8 @@
 # matrix-mcp
 
-A remote [MCP](https://modelcontextprotocol.io) server that gives AI agents full access to a Matrix account, including **end-to-end encrypted** rooms and chats bridged from Messenger, Instagram, WhatsApp, Discord, iMessage and other [mautrix](https://github.com/mautrix) bridges.
+A remote [MCP](https://modelcontextprotocol.io) server that gives AI agents read-only access by default to a Matrix account, including **end-to-end encrypted** rooms and chats bridged from Messenger, Instagram, WhatsApp, Discord, iMessage and other [mautrix](https://github.com/mautrix) bridges.
 
-It logs in as its own Matrix device, decrypts messages, and keeps a local full-text index, so an agent can search and read your chats, send messages, and manage rooms and bridges.
+It logs in as its own Matrix device, decrypts messages, and keeps a local full-text index so an agent can search and read your chats. Enable write access to let clients send messages and manage rooms and bridges.
 
 - **E2EE.** Built on [mautrix-go](https://github.com/mautrix/go). With your recovery key it cross-signs its device and imports the server-side key backup, so older history decrypts too.
 - **Search.** SQLite FTS5 index that survives restarts and folds diacritics, so `zolc` matches `żółć`. It backfills a configurable amount of history per room, and more on demand.
@@ -28,7 +28,9 @@ It logs in as its own Matrix device, decrypts messages, and keeps a local full-t
 | `bridge_command` | Send a command to a bridge bot (`help`, `list-logins`, `search`, `start-chat`, …) and collect its replies |
 | `matrix_api` | Raw client-server or Synapse admin API call |
 
-Rooms can be referenced by ID, alias or a unique part of their name. Read-only tools carry `readOnlyHint`; sending and deleting tools are marked as writes.
+Rooms can be referenced by ID, alias or a unique part of their name.
+
+The server exposes only `status`, `list_rooms`, `get_room`, `read_messages`, `get_message_context`, `search_messages`, `backfill_room`, `wait_for_messages`, and `download_media` by default. `backfill_room` fetches Matrix history and updates the local search index. The server rejects calls to tools outside this list, including `mark_read`, `bridge_command`, and `matrix_api`, unless `MCP_ALLOW_WRITES=true`. The setting applies to both bearer-token and OAuth clients.
 
 ## Running
 
@@ -42,6 +44,7 @@ The server needs a Matrix account it can log into with a password, ideally on th
 | `MATRIX_RECOVERY_KEY` | | Recovery (SSSS) key. Verifies the device and imports the key backup so old messages decrypt |
 | `PICKLE_KEY` | yes | Encrypts the crypto store. Never change it, or the device has to be recreated |
 | `MCP_BEARER_TOKEN` | yes | Static client token, at least 32 characters |
+| `MCP_ALLOW_WRITES` | | Default `false`. Set to `true` and restart to enable all tools for authenticated clients |
 | `PUBLIC_URL` | for OAuth | Public base URL, e.g. `https://matrix-mcp.example.com`. Setting it enables OAuth for custom connectors |
 | `TZ` | | Time zone for date filters without an explicit offset, e.g. `Europe/Warsaw` |
 | `BACKFILL_PER_ROOM` | | Messages indexed per room on first start. Default 200 |

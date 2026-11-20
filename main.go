@@ -27,6 +27,7 @@ type Config struct {
 	RecoveryKey     string
 	PickleKey       string
 	BearerToken     string
+	AllowWrites     bool
 	DataDir         string
 	ListenAddr      string
 	DeviceName      string
@@ -55,6 +56,11 @@ func loadConfig() (Config, error) {
 		PublicURL:   strings.TrimRight(env("PUBLIC_URL", ""), "/"),
 	}
 	cfg.BackfillPerRoom, _ = strconv.Atoi(env("BACKFILL_PER_ROOM", "200"))
+	var err error
+	cfg.AllowWrites, err = strconv.ParseBool(env("MCP_ALLOW_WRITES", "false"))
+	if err != nil {
+		return cfg, errors.New("MCP_ALLOW_WRITES must be a boolean")
+	}
 	var missing []string
 	for name, v := range map[string]string{
 		"MATRIX_USER_ID": cfg.UserID, "MATRIX_PASSWORD": cfg.Password,
@@ -109,8 +115,14 @@ func main() {
 	}
 	go app.Run(ctx)
 
+	instructions := fmt.Sprintf(serverInstructions, cfg.UserID)
+	if cfg.AllowWrites {
+		instructions += writeInstructions
+	} else {
+		instructions += "\n- This MCP connection provides read-only access to Matrix chats."
+	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "matrix-mcp", Title: "Matrix", Version: version}, &mcp.ServerOptions{
-		Instructions: fmt.Sprintf(serverInstructions, cfg.UserID),
+		Instructions: instructions,
 	})
 	registerTools(server, app)
 
@@ -140,7 +152,7 @@ func main() {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
-	log.Info().Str("addr", cfg.ListenAddr).Msg("MCP server listening on /mcp")
+	log.Info().Str("addr", cfg.ListenAddr).Bool("allow_writes", cfg.AllowWrites).Msg("MCP server listening on /mcp")
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal().Err(err).Msg("HTTP server failed")
 	}
@@ -152,6 +164,9 @@ const serverInstructions = `Access to the user's Matrix account (%s), including 
 - Start with list_rooms (sorted by recent activity) or search_messages, then read_messages for a room.
 - list_rooms only matches room names. To find a chat by what someone said, use search_messages.
 - Use list_rooms with awaiting_reply for chats the user has not answered yet.
-- Messages are identified by message_id; pass it to get_message_context, send_message reply_to, send_reaction, download_media.
+- Messages are identified by message_id. Pass it to get_message_context or download_media.`
+
+const writeInstructions = `
+- Use message_id for send_message reply_to and send_reaction.
 - Messages you send are delivered to real people on the bridged networks. Only send when the user asked for it.
 - Use bridge_command to talk to a bridge bot (e.g. network "messenger", command "help", "list-logins", "start-chat <id>").`

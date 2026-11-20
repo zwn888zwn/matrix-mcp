@@ -40,6 +40,9 @@ func errResult(err error) (*mcp.CallToolResult, any, error) {
 
 // tool registers a handler returning (value, error); errors become tool errors visible to the model.
 func tool[In any](s *mcp.Server, app *App, t *mcp.Tool, fn func(ctx context.Context, in In) (any, error)) {
+	if !app.cfg.AllowWrites && !allowedReadOnlyTool(t.Name) {
+		return
+	}
 	mcp.AddTool(s, t, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		if !app.ready.Load() && t.Name != "status" {
 			return errResult(errors.New("the Matrix client is still starting up (initial sync); try again in a few seconds"))
@@ -53,6 +56,16 @@ func tool[In any](s *mcp.Server, app *App, t *mcp.Tool, fn func(ctx context.Cont
 		}
 		return jsonResult(out)
 	})
+}
+
+func allowedReadOnlyTool(name string) bool {
+	switch name {
+	case "status", "list_rooms", "get_room", "read_messages", "get_message_context",
+		"search_messages", "backfill_room", "wait_for_messages", "download_media":
+		return true
+	default:
+		return false
+	}
 }
 
 func readOnly(title string) *mcp.ToolAnnotations {
