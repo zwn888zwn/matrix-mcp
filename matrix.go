@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -37,7 +39,7 @@ type App struct {
 	backupMu        sync.Mutex
 	backupKey       *backup.MegolmBackupKey
 	lastBackupFetch time.Time
-	backupStatus    string
+	backupStatus    atomic.Pointer[string]
 
 	waitMu  sync.Mutex
 	waiters map[int]*waiter
@@ -93,22 +95,43 @@ func NewApp(ctx context.Context, cfg Config, log zerolog.Logger) (*App, error) {
 	app.rooms = NewRoomCache(app)
 	app.log.Info().Stringer("user_id", cli.UserID).Stringer("device_id", cli.DeviceID).Msg("logged in")
 
-	if cfg.RecoveryKey != "" {
-		if err := app.setupRecovery(ctx); err != nil {
-			app.log.Error().Err(err).Msg("recovery key setup failed; history from before this device will not decrypt")
-			app.backupStatus = "recovery failed: " + err.Error()
-		}
-	} else {
-		app.backupStatus = "no MATRIX_RECOVERY_KEY set: device is unverified and old history cannot be decrypted"
-	}
-
-	syncer := cli.Syncer.(*mautrix.DefaultSyncer)
-	syncer.FilterJSON = &mautrix.Filter{
-		Room: &mautrix.RoomFilter{Timeline: &mautrix.FilterPart{Limit: 30}},
-	}
-	syncer.OnSync(app.onSync)
-	syncer.OnEvent(app.onEvent)
 	return app, nil
+}
+
+// lockDataDir keeps separate processes from operating the same Matrix device concurrently.
+func lockDataDir(ctx context.Context, dataDir string) (func(), error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dataDir, ".matrix-mcp-lock.db")
+	lockDB, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_txlock=immediate&_busy_timeout=0", path))
+	if err != nil {
+		return nil, err
+	}
+	// The transaction is on a separate database so it does not block crypto or index writes.
+	// It stays open until release and SQLite frees the lock even if the process exits abruptly.
+	txn, err := lockDB.BeginTx(context.WithoutCancel(ctx), nil)
+	if err != nil {
+		_ = lockDB.Close()
+		return nil, fmt.Errorf("lock %s (stop any other matrix-mcp process using this data directory): %w", dataDir, err)
+	}
+	return func() {
+		_ = txn.Rollback()
+		_ = lockDB.Close()
+	}, nil
+}
+
+func (app *App) loadKeyBackup(ctx context.Context) {
+	var err error
+	if app.cfg.RecoveryKey != "" {
+		err = app.setupRecovery(ctx)
+	} else {
+		err = app.loadStoredKeyBackup(ctx)
+	}
+	if err != nil {
+		app.log.Error().Err(err).Msg("key backup setup failed")
+		app.backupStatus.Store(ptr("key backup setup failed: " + err.Error()))
+	}
 }
 
 func (app *App) setupRecovery(ctx context.Context) error {
@@ -154,17 +177,38 @@ func (app *App) refreshKeyBackup(ctx context.Context, force bool) error {
 		return nil
 	}
 	app.lastBackupFetch = time.Now()
-	version, err := app.crypto.Machine().DownloadAndStoreLatestKeyBackup(ctx, app.backupKey)
+	info, err := app.cli.GetKeyBackupLatestVersion(ctx)
+	if err == nil {
+		switch {
+		case info.Algorithm != id.KeyBackupAlgorithmMegolmBackupV1:
+			err = fmt.Errorf("unsupported key backup algorithm %q", info.Algorithm)
+		case info.Version == "" || info.AuthData.PublicKey != backupPublicKey(app.backupKey):
+			err = errors.New("the saved key does not match the current backup")
+		default:
+			err = app.crypto.Machine().GetAndStoreKeyBackup(ctx, info.Version, app.backupKey)
+		}
+	}
 	if err != nil {
-		app.backupStatus = "key backup download failed: " + err.Error()
+		app.backupStatus.Store(ptr("key backup download failed: " + err.Error()))
 		return err
 	}
-	app.backupStatus = fmt.Sprintf("key backup version %s imported at %s", version, time.Now().UTC().Format(time.RFC3339))
-	app.log.Info().Str("version", string(version)).Msg("imported room keys from key backup")
+	app.backupStatus.Store(ptr(fmt.Sprintf("key backup version %s imported at %s", info.Version, time.Now().UTC().Format(time.RFC3339))))
+	app.log.Info().Str("version", info.Version.String()).Msg("imported room keys from key backup")
 	return nil
 }
 
+func backupPublicKey(key *backup.MegolmBackupKey) id.Ed25519 {
+	return id.Ed25519(base64.RawStdEncoding.EncodeToString(key.PublicKey().Bytes()))
+}
+
 func (app *App) Run(ctx context.Context) {
+	syncer := app.cli.Syncer.(*mautrix.DefaultSyncer)
+	syncer.FilterJSON = &mautrix.Filter{
+		Room: &mautrix.RoomFilter{Timeline: &mautrix.FilterPart{Limit: 30}},
+	}
+	syncer.OnSync(app.onSync)
+	syncer.OnEvent(app.onEvent)
+
 	go app.periodic(ctx)
 	for ctx.Err() == nil {
 		err := app.cli.SyncWithContext(ctx)

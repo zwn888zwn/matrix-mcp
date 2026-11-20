@@ -107,6 +107,11 @@ func (s *Store) SetKV(ctx context.Context, key, value string) error {
 	return err
 }
 
+func (s *Store) resetBackfill(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM mcp_kv WHERE key LIKE 'backfilled:%'`)
+	return err
+}
+
 func (s *Store) Index(ctx context.Context, m *Message) error {
 	if m.EventID == "" {
 		return nil

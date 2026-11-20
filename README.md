@@ -4,7 +4,7 @@ A remote [MCP](https://modelcontextprotocol.io) server that gives AI agents read
 
 It logs in as its own Matrix device, decrypts messages, and keeps a local full-text index so an agent can search and read your chats. Enable write access to let clients send messages and manage rooms and bridges.
 
-- **E2EE.** Built on [mautrix-go](https://github.com/mautrix/go). With your recovery key it cross-signs its device and imports the server-side key backup, so older history decrypts too.
+- **E2EE.** Built on [mautrix-go](https://github.com/mautrix/go). Verify its device from an existing Element session or with your recovery key, then import the server-side key backup to decrypt older history.
 - **Search.** SQLite FTS5 index that survives restarts and folds diacritics, so `zolc` matches `żółć`. It backfills a configurable amount of history per room, and more on demand.
 - **Bridge-aware.** Detects each room's network (`m.bridge`) and the bridge management rooms, and can run bridge bot commands.
 - **Remote.** Streamable HTTP. Authenticate with a static bearer token (Claude Code, Codex, scripts) or OAuth 2.1 with dynamic client registration, which claude.ai and ChatGPT custom connectors need. OAuth sign-in uses the Matrix account itself: the consent page checks your username and password with the homeserver.
@@ -59,6 +59,22 @@ docker run -d --name matrix-mcp -p 8080:8080 -v matrix-mcp-data:/data \
 ```
 
 Put it behind HTTPS. Keep the `/data` volume: it holds the device keys, the crypto store and the search index.
+
+### Verify with an existing Element device
+
+Use the local `verify` command to pair with a signed-in, verified Element device and recover the server-side key backup. This works without setting `MATRIX_RECOVERY_KEY` when the Element device can share the backup key.
+
+If the server container is already running, stop it first with `docker stop matrix-mcp`. Run the command in a terminal with the same configuration and data volume as the server.
+
+```sh
+docker build -t matrix-mcp .
+docker run --rm -it --env-file ~/.matrix-mcp.env \
+  -v matrix-mcp-data:/data matrix-mcp verify
+```
+
+Open Element, accept the request for the displayed Matrix MCP device, and compare the emoji codes. Confirm on both sides if they match. Keep Element online until the terminal reports that the key backup was imported.
+
+Start the server from the rebuilt image with the same data volume and `PICKLE_KEY`. Recreate a server container that uses an older image. The server loads the backup key from the encrypted crypto store and reindexes the configured recent history. Run `verify` again if device verification succeeded but backup recovery timed out.
 
 ## Connecting clients
 

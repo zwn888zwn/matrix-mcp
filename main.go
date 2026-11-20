@@ -102,6 +102,11 @@ func main() {
 	if os.Getenv("DEBUG") != "" {
 		log = log.Level(zerolog.DebugLevel)
 	}
+	verify := len(os.Args) == 2 && os.Args[1] == "verify"
+	if len(os.Args) > 1 && !verify {
+		fmt.Fprintln(os.Stderr, "Usage: matrix-mcp [verify]")
+		os.Exit(2)
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatal().Err(err).Msg("invalid configuration")
@@ -109,10 +114,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	unlock, err := lockDataDir(ctx, cfg.DataDir)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to open Matrix data directory")
+	}
+	defer unlock()
 	app, err := NewApp(ctx, cfg, log)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to start Matrix client")
 	}
+	if verify {
+		err = app.verifyAndRestore(ctx, os.Stdin, os.Stdout)
+		app.Close()
+		if err != nil {
+			log.Fatal().Err(err).Msg("Matrix device setup failed")
+		}
+		return
+	}
+	app.loadKeyBackup(ctx)
 	go app.Run(ctx)
 
 	instructions := fmt.Sprintf(serverInstructions, cfg.UserID)

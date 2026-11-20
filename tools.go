@@ -243,9 +243,13 @@ func registerTools(s *mcp.Server, app *App) {
 			if ts := app.lastSyncOK.Load(); ts > 0 {
 				lastSync = time.Unix(ts, 0).UTC().Format(time.RFC3339)
 			}
+			var backupStatus string
+			if status := app.backupStatus.Load(); status != nil {
+				backupStatus = *status
+			}
 			return map[string]any{
 				"user_id": app.cli.UserID, "device_id": app.cli.DeviceID, "ready": app.ready.Load(),
-				"device_verified": app.verified.Load(), "key_backup": app.backupStatus,
+				"device_verified": app.verified.Load(), "key_backup": backupStatus,
 				"last_sync": lastSync, "rooms": app.rooms.Count(), "pending_invites": app.rooms.Invites(),
 				"indexed_messages": indexed, "version": version,
 			}, nil
